@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harris Mountain Map</title>
+  <style>
+    #map {
+      height: 500px;
+      width: 100%;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+    }
+    .map-card {
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .error-message {
+      background-color: #ffebee;
+      color: #c62828;
+      padding: 10px;
+      margin-top: 10px;
+      border-radius: 4px;
+      border: 1px solid #ef9a9a;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="map-card">
+      <div id="error-container"></div>
+      <div id="map"></div>
+    </div>
+  </div>
+
+  <script>
+    function initMap() {
+      // KML file URL
+      const kmlUrl = 'https://raw.githubusercontent.com/seabarn/HMH5/refs/heads/main/Harris%20Mountain%20Map%20(1).kml';
+      
+      // Custom icon URLs
+      const customIcons = {
+        mountain: 'https://raw.githubusercontent.com/seabarn/icons/refs/heads/main/HMH%20Mountain%20(1).svg',
+        base: 'https://raw.githubusercontent.com/seabarn/harris-mountain-2/main/LOGO%202%201%20(1).png',
+        grey: 'https://raw.githubusercontent.com/seabarn/icons/refs/heads/main/HMH%20Mountain.svg' // Grey icon for Queenstown HQ
+      };
+      
+      // Custom salmon-colored SVG marker (using the #F39791 color)
+      const salmonMarkerSVG = {
+        path: 'M 0,0 C -2,-20 -10,-22 -10,-30 A 10,10 0 1,1 10,-30 C 10,-22 2,-20 0,0 z',
+        fillColor: '#F39791',
+        fillOpacity: 1,
+        strokeColor: '#000',
+        strokeWeight: 1,
+        scale: 1,
+        anchor: new google.maps.Point(0, 0)
+      };
+      
+      // For tracking icon types
+      const iconTypes = new Map();
+      
+      // Greyscale map style
+      const greyscaleStyle = [
+        {
+          featureType: "all",
+          elementType: "geometry",
+          stylers: [{ saturation: -100 }]
+        },
+        {
+          featureType: "all",
+          elementType: "labels.text.fill",
+          stylers: [{ color: "#303030" }]
+        },
+        {
+          featureType: "all",
+          elementType: "labels.text.stroke",
+          stylers: [{ color: "#ffffff" }, { lightness: 16 }]
+        },
+        {
+          featureType: "all",
+          elementType: "labels.icon",
+          stylers: [{ visibility: "simplified" }, { saturation: -100 }]
+        },
+        {
+          featureType: "water",
+          elementType: "geometry",
+          stylers: [{ color: "#e9e9e9" }, { lightness: 17 }]
+        }
+      ];
+      
+      // Create a new map centered on Cardrona, New Zealand with greyscale style
+      const map = new google.maps.Map(document.getElementById('map'), {
+        center: { lat: -44.8726, lng: 168.9434 }, // Centered on Cardrona, New Zealand
+        zoom: 8,
+        mapTypeId: google.maps.MapTypeId.TERRAIN,
+        styles: greyscaleStyle,
+        mapTypeControl: false,
+        streetViewControl: false,
+        fullscreenControl: true,
+        zoomControl: true
+      });
+
+      // First approach: Load the KML for shapes/paths/polygons directly using geometry rendering
+      // This will handle shapes directly and will NOT process any markers
+      fetch(kmlUrl)
+        .then(response => response.text())
+        .then(kmlText => {
+          // Parse KML
+          const parser = new DOMParser();
+          const kml = parser.parseFromString(kmlText, 'text/xml');
+          
+          // Get all placemarks
+          const placemarks = kml.getElementsByTagName('Placemark');
+          
+          // Process all placemarks
+          Array.from(placemarks).forEach(placemark => {
+            const hasPoint = placemark.getElementsByTagName('Point').length > 0;
+            
+            if (hasPoint) {
+              // Handle points with custom icons
+              try {
+                // Get coordinates
+                const coordinatesText = placemark.getElementsByTagName('coordinates')[0].textContent.trim();
+                const coordinateParts = coordinatesText.split(',');
+                
+                if (coordinateParts.length < 2) return;
+                
+                const position = {
+                  lng: parseFloat(coordinateParts[0]),
+                  lat: parseFloat(coordinateParts[1])
+                };
+                
+                // Get name and description
+                const name = placemark.getElementsByTagName('name')[0]?.textContent || '';
+                const description = placemark.getElementsByTagName('description')[0]?.textContent || '';
+                
+                // Get style URL if available
+                const styleUrlElement = placemark.getElementsByTagName('styleUrl')[0];
+                let styleId = null;
+                
+                if (styleUrlElement && styleUrlElement.textContent) {
+                  styleId = styleUrlElement.textContent.trim();
+                  // Remove the # if it exists
+                  if (styleId.startsWith('#')) {
+                    styleId = styleId.substring(1);
+                  }
+                }
+                
+                // Determine icon type based on name or styleId
+                let iconType = 'default';
+                
+                // Check for Queenstown HQ to use grey icon
+                if (name.toLowerCase().includes('queenstown') && name.toLowerCase().includes('hq')) {
+                  iconType = 'grey';
+                } else if (name.toLowerCase().includes('base') || (styleId && styleId.toLowerCase().includes('base'))) {
+                  iconType = 'base';
+                } else if (name.toLowerCase().includes('mountain') || (styleId && styleId.toLowerCase().includes('mountain'))) {
+                  iconType = 'mountain';
+                }
+                
+                // Store this icon type
+                if (!iconTypes.has(iconType)) {
+                  iconTypes.set(iconType, {
+                    count: 0,
+                    url: customIcons[iconType] || null
+                  });
+                }
+                iconTypes.get(iconType).count++;
+                
+                // Create icon with custom image based on type and salmon color
+                let markerOptions;
+                
+                if (iconType === 'base') {
+                  // Use the base logo for base markers
+                  markerOptions = {
+                    position: position,
+                    map: map,
+                    title: name,
+                    icon: {
+                      url: customIcons.base,
+                      scaledSize: new google.maps.Size(32, 32),
+                      origin: new google.maps.Point(0, 0),
+                      anchor: new google.maps.Point(16, 16)
+                    }
+                  };
+                } else if (iconType === 'grey') {
+                  // Use the grey icon for Queenstown HQ
+                  markerOptions = {
+                    position: position,
+                    map: map,
+                    title: name,
+                    icon: {
+                      url: customIcons.grey,
+                      scaledSize: new google.maps.Size(32, 32),
+                      origin: new google.maps.Point(0, 0),
+                      anchor: new google.maps.Point(16, 16)
+                    }
+                  };
+                } else {
+                  // Use the mountain SVG as the default icon
+                  markerOptions = {
+                    position: position,
+                    map: map,
+                    title: name,
+                    icon: {
+                      url: customIcons.mountain,
+                      scaledSize: new google.maps.Size(32, 32),
+                      origin: new google.maps.Point(0, 0),
+                      anchor: new google.maps.Point(16, 16)
+                    }
+                  };
+                }
+                
+                // Create marker
+                const marker = new google.maps.Marker(markerOptions);
+
+                // Add info window with description if available
+                if (name || description) {
+                  const infoContent = `<strong>${name}</strong><p>${description}</p>`;
+                  const infoWindow = new google.maps.InfoWindow({
+                    content: infoContent
+                  });
+
+                  marker.addListener('click', function() {
+                    infoWindow.open(map, marker);
+                  });
+                }
+              } catch (error) {
+                console.error("Error processing point placemark:", error);
+              }
+            } else {
+              // Handle non-point elements (lines, polygons, etc.) - same as your original code
+              try {
+                // Process LineStrings
+                const lineStrings = placemark.getElementsByTagName('LineString');
+                Array.from(lineStrings).forEach(lineString => {
+                  try {
+                    const coordsText = lineString.getElementsByTagName('coordinates')[0].textContent.trim();
+                    const path = coordsText.split(/\s+/).map(coordStr => {
+                      const parts = coordStr.split(',');
+                      return { 
+                        lng: parseFloat(parts[0]), 
+                        lat: parseFloat(parts[1])
+                      };
+                    });
+                    
+                    // Get style information
+                    const styleUrl = placemark.getElementsByTagName('styleUrl')[0]?.textContent?.trim() || '';
+                    let lineColor = '#000000';  // Default color
+                    let lineWidth = 2;          // Default width
+                    
+                    if (styleUrl) {
+                      const styleId = styleUrl.replace('#', '');
+                      const style = kml.getElementById(styleId) || 
+                                   Array.from(kml.getElementsByTagName('Style')).find(s => s.id === styleId);
+                      
+                      if (style) {
+                        const lineStyle = style.getElementsByTagName('LineStyle')[0];
+                        if (lineStyle) {
+                          const colorElement = lineStyle.getElementsByTagName('color')[0];
+                          const widthElement = lineStyle.getElementsByTagName('width')[0];
+                          
+                          if (colorElement) {
+                            // KML colors are aabbggrr format
+                            const kmlColor = colorElement.textContent.trim();
+                            if (kmlColor.length === 8) {
+                              lineColor = '#' + kmlColor.substring(6, 8) + kmlColor.substring(4, 6) + kmlColor.substring(2, 4);
+                            }
+                          }
+                          
+                          if (widthElement) {
+                            lineWidth = parseFloat(widthElement.textContent.trim());
+                          }
+                        }
+                      }
+                    }
+                    
+                    // Create the polyline
+                    new google.maps.Polyline({
+                      path: path,
+                      map: map,
+                      strokeColor: lineColor,
+                      strokeWeight: lineWidth,
+                      strokeOpacity: 1.0
+                    });
+                  } catch (err) {
+                    console.error("Error processing LineString:", err);
+                  }
+                });
+                
+                // Process Polygons
+                const polygons = placemark.getElementsByTagName('Polygon');
+                Array.from(polygons).forEach(polygon => {
+                  try {
+                    // Get outer boundary
+                    const outerBoundary = polygon.getElementsByTagName('outerBoundaryIs')[0];
+                    const outerCoords = outerBoundary.getElementsByTagName('coordinates')[0].textContent.trim();
+                    
+                    const outerPath = outerCoords.split(/\s+/).map(coordStr => {
+                      const parts = coordStr.split(',');
+                      return { 
+                        lng: parseFloat(parts[0]), 
+                        lat: parseFloat(parts[1])
+                      };
+                    });
+                    
+                    // Process inner boundaries (holes)
+                    const innerBoundaries = polygon.getElementsByTagName('innerBoundaryIs');
+                    const holes = Array.from(innerBoundaries).map(innerBoundary => {
+                      const innerCoords = innerBoundary.getElementsByTagName('coordinates')[0].textContent.trim();
+                      return innerCoords.split(/\s+/).map(coordStr => {
+                        const parts = coordStr.split(',');
+                        return { 
+                          lng: parseFloat(parts[0]), 
+                          lat: parseFloat(parts[1])
+                        };
+                      });
+                    });
+                    
+                    // Get style information
+                    const styleUrl = placemark.getElementsByTagName('styleUrl')[0]?.textContent?.trim() || '';
+                    // Default fill color is now #F39731
+                    let fillColor = '#F39731';   // Default fill color
+                    let strokeColor = '#000000'; // Default stroke color
+                    let strokeWidth = 2;         // Default stroke width
+                    let fillOpacity = 0.35;      // Default fill opacity
+                    
+                    if (styleUrl) {
+                      const styleId = styleUrl.replace('#', '');
+                      const style = kml.getElementById(styleId) || 
+                                   Array.from(kml.getElementsByTagName('Style')).find(s => s.id === styleId);
+                      
+                      if (style) {
+                        const polyStyle = style.getElementsByTagName('PolyStyle')[0];
+                        const lineStyle = style.getElementsByTagName('LineStyle')[0];
+                        
+                        if (polyStyle) {
+                          const colorElement = polyStyle.getElementsByTagName('color')[0];
+                          const fillElement = polyStyle.getElementsByTagName('fill')[0];
+                          
+                          if (colorElement) {
+                            // KML colors are aabbggrr format
+                            const kmlColor = colorElement.textContent.trim();
+                            if (kmlColor.length === 8) {
+                              // Extract opacity (aa) and convert to decimal
+                              const opacity = parseInt(kmlColor.substring(0, 2), 16) / 255;
+                              fillOpacity = opacity;
+                              
+                              // Extract color (bbggrr) and convert to RGB
+                              fillColor = '#' + kmlColor.substring(6, 8) + kmlColor.substring(4, 6) + kmlColor.substring(2, 4);
+                            }
+                          }
+                          
+                          if (fillElement && fillElement.textContent.trim() === '0') {
+                            fillOpacity = 0; // No fill
+                          }
+                        }
+                        
+                        if (lineStyle) {
+                          const colorElement = lineStyle.getElementsByTagName('color')[0];
+                          const widthElement = lineStyle.getElementsByTagName('width')[0];
+                          
+                          if (colorElement) {
+                            const kmlColor = colorElement.textContent.trim();
+                            if (kmlColor.length === 8) {
+                              strokeColor = '#' + kmlColor.substring(6, 8) + kmlColor.substring(4, 6) + kmlColor.substring(2, 4);
+                            }
+                          }
+                          
+                          if (widthElement) {
+                            strokeWidth = parseFloat(widthElement.textContent.trim());
+                          }
+                        }
+                      }
+                    }
+                    
+                    // Create the polygon
+                    new google.maps.Polygon({
+                      paths: [outerPath, ...holes],
+                      map: map,
+                      strokeColor: strokeColor,
+                      strokeWeight: strokeWidth,
+                      strokeOpacity: 1.0,
+                      fillColor: fillColor,
+                      fillOpacity: fillOpacity
+                    });
+                  } catch (err) {
+                    console.error("Error processing Polygon:", err);
+                  }
+                });
+                
+                // Process MultiGeometry if present
+                const multiGeometries = placemark.getElementsByTagName('MultiGeometry');
+                Array.from(multiGeometries).forEach(multiGeometry => {
+                  // Process LineStrings within MultiGeometry
+                  const lineStrings = multiGeometry.getElementsByTagName('LineString');
+                  Array.from(lineStrings).forEach(lineString => {
+                    try {
+                      const coordsText = lineString.getElementsByTagName('coordinates')[0].textContent.trim();
+                      const path = coordsText.split(/\s+/).map(coordStr => {
+                        const parts = coordStr.split(',');
+                        return { 
+                          lng: parseFloat(parts[0]), 
+                          lat: parseFloat(parts[1])
+                        };
+                      });
+                      
+                      // Create a simple polyline
+                      new google.maps.Polyline({
+                        path: path,
+                        map: map,
+                        strokeColor: '#000000',
+                        strokeWeight: 2,
+                        strokeOpacity: 1.0
+                      });
+                    } catch (err) {
+                      console.error("Error processing MultiGeometry LineString:", err);
+                    }
+                  });
+                  
+                  // Process Polygons within MultiGeometry
+                  const polygons = multiGeometry.getElementsByTagName('Polygon');
+                  Array.from(polygons).forEach(polygon => {
+                    try {
+                      const outerBoundary = polygon.getElementsByTagName('outerBoundaryIs')[0];
+                      const outerCoords = outerBoundary.getElementsByTagName('coordinates')[0].textContent.trim();
+                      
+                      const outerPath = outerCoords.split(/\s+/).map(coordStr => {
+                        const parts = coordStr.split(',');
+                        return { 
+                          lng: parseFloat(parts[0]), 
+                          lat: parseFloat(parts[1])
+                        };
+                      });
+                      
+                      // Create a simple polygon with #F39731 color
+                      new google.maps.Polygon({
+                        paths: [outerPath],
+                        map: map,
+                        strokeColor: '#000000',
+                        strokeWeight: 2,
+                        strokeOpacity: 1.0,
+                        fillColor: '#F39731',
+                        fillOpacity: 0.35
+                      });
+                    } catch (err) {
+                      console.error("Error processing MultiGeometry Polygon:", err);
+                    }
+                  });
+                });
+              } catch (error) {
+                console.error("Error processing non-point placemark:", error);
+              }
+            }
+          });
+          
+          // We no longer create the legend
+        })
+        .catch(error => {
+          console.error('Error loading KML:', error);
+          document.getElementById('error-container').innerHTML = `
+            <div class="error-message">
+              Error loading KML file: ${error.message}
+            </div>
+          `;
+          
+          // Optional fallback to directly load the KML but with a warning about default pins
+          document.getElementById('error-container').innerHTML += `
+            <div class="error-message">
+              Attempting to load original KML as fallback (may show default pins)
+            </div>
+          `;
+          
+          // Last resort fallback
+          const kmlLayer = new google.maps.KmlLayer({
+            url: kmlUrl,
+            map: map,
+            preserveViewport: true
+          });
+        });
+        
+      // Function to create a legend (removed as requested)
+    }
+  </script>
+  
+  <!-- Load the Google Maps API with the async parameter -->
+  <script async defer
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDL_RGDQw2xdIduOHV39ryRHPccN77iRjw&callback=initMap&v=weekly&loading=async">
+  </script>
+</body>
+</html>
